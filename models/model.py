@@ -200,3 +200,7 @@ class NaiveWrapper(SimpleWrapper):
             finished = stopping_criteria(input_ids, None)
             
         return input_ids
+
+
+class OffloadWrapper(SimpleWrapper):
+    
