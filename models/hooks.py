@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 import gc
+import copy
 
 from accelerate.state import PartialState
 from accelerate.utils import (
@@ -18,6 +19,8 @@ from accelerate.utils import (
 )
 from accelerate.utils.modeling import get_non_persistent_buffers
 from accelerate.utils.other import recursive_getattr
+
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRMSNorm, LlamaRotaryEmbedding
 
 
 _accelerate_added_attributes = ["to", "cuda", "npu", "xpu", "mlu", "musa"]
@@ -219,11 +222,15 @@ class BlockwiseHook(ModelHook):
 
     def __init__(
         self, 
+        module_name: str,
         execution_device: Optional[Union[int, str, torch.device]] = "cuda:0",
         memory_limit: float = 0.0
     ):
         self.execution_device = execution_device
         self.memory_limit = memory_limit
+        self.no_grad = True
+        self.module_cache = None
+        self.module_name = module_name
     
     def init_hook(self, module):
         return module.to("cpu")
@@ -231,7 +238,7 @@ class BlockwiseHook(ModelHook):
     def pre_forward(self, module, *args, **kwargs):
 
         if self.memory_limit > 0:
-            gpu_mem_used = torch.cuda.memory_reserved(self.exeucution_device)
+            gpu_mem_used = torch.cuda.memory_reserved(self.execution_device)
             gpu_mem_used = gpu_mem_used / (1024 * 1024 * 1024)
             print(f"[Debug] GPU memory usage: {gpu_mem_used} GB")
 
@@ -246,13 +253,17 @@ class BlockwiseHook(ModelHook):
             size_in_GB = size_in_bytes / (1024 * 1024 * 1024)
             
             # TODO: try to clean cuda cache here, not done
-            if gpu_mem_used + size_in_GB > memory_limit:
+            if gpu_mem_used + size_in_GB > self.memory_limit:
                 print(f"[Offload Warning] Possible memory usage: {gpu_mem_used+size_in_GB}")
                 torch.cuda.empty_cache()
+        
+        #TODO: deep copy module
+        module_copy = copy.deepcopy(module)
 
-        return module.to(execution_device), args.to(device), kwargs.to(device)
+        return module_copy.to(self.execution_device), send_to_device(args, self.execution_device), send_to_device(kwargs, self.execution_device)
 
     def post_forward(self, module, output):
+        # print("Post Forwarding...")
         del module
 
         #TODO: check if this operation can be used in pre_foward
@@ -273,6 +284,9 @@ def add_hook_to_block(
 
     def new_forward(module, *args, **kwargs):
         module_gpu, args, kwargs = module._hook.pre_forward(module, *args, **kwargs)
+        # gpu_mem_used = torch.cuda.memory_reserved("cuda:0")
+        # gpu_mem_used = gpu_mem_used / (1024 * 1024 * 1024)
+        # print(f"[Debug] Current gpu usage: {gpu_mem_used}")
 
         if module_gpu._hook.no_grad:
             with torch.no_grad():
@@ -280,7 +294,10 @@ def add_hook_to_block(
         else:
             output = module_gpu._old_forward(*args, **kwargs)
 
+        # print(f"Check output device: {output.device}")
+        # output = module._hook.post_forward(module_gpu)
         del module_gpu, args, kwargs
+        torch.cuda.empty_cache()
 
         return output
 
@@ -290,7 +307,7 @@ def add_hook_to_block(
 
 def attach_blockwise_hook(
     module: nn.Module,
-    hook_module_list: List,
+    hook_module_type: tuple,
     module_name: str = ""
 ):
 
@@ -298,25 +315,24 @@ def attach_blockwise_hook(
     Recursively attach hook to module
     """
 
-    for module_type in block_type:
-        if isinstance(module, module_type):
-            print(f"Hook add on {module_name}")
-            add_hook_to_block()
-            return
+    if isinstance(module, (LlamaDecoderLayer, nn.Embedding, nn.Linear, LlamaRMSNorm, LlamaRotaryEmbedding)):
+        print(f"Hook add on {module_name}")
+        add_hook_to_block(module, BlockwiseHook(module_name, torch.device("cuda:0"), 8.0))
+        return
 
     for child_name, child in module.named_children():
-        chile_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
+        child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
 
         attach_blockwise_hook(
             child,
-            child_name,
-            hook_module_list
+            hook_module_type,
+            child_name
         )
 
 def offload_to_cpu(
     module: nn.Module,
-    hook_module_list: List
+    hook_module_type: tuple
 ):
 
-    attach_blockwise_hook(module, hook_module_list)
+    attach_blockwise_hook(module, hook_module_type)
     return module

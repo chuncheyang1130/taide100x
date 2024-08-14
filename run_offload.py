@@ -2,11 +2,12 @@ import torch
 import torch.nn as nn
 # from transformers import LlamaForCausalLM, AutoTokenizer
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaForCausalLM, LlamaRMSNorm, LlamaRotaryEmbedding
 import argparse
 import time
 
 from models.model import NaiveWrapper
-from model.hooks import offload_to_cpu
+from models.hooks import offload_to_cpu
 
 def main(args):
 
@@ -16,7 +17,6 @@ def main(args):
     llm = AutoModelForCausalLM.from_pretrained(
         args.llm_path,
         torch_dtype=torch.float16,
-        low_cpu_mem_usage=True,
         device_map="cpu"
     )
     
@@ -31,7 +31,8 @@ def main(args):
 
     print("Adding hook to model...")
 
-    hook_module_list = [LlamaDecoderLayer, nn.Embedding, nn.Linear]
+    #TODO: build a type list
+    hook_module_list = (LlamaDecoderLayer, nn.Embedding, nn.Linear, LlamaRMSNorm, LlamaRotaryEmbedding)
     model = offload_to_cpu(model, hook_module_list)
 
     print("Warming up model...")
