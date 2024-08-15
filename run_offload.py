@@ -8,6 +8,7 @@ import time
 
 from models.model import NaiveWrapper
 from models.hooks import offload_to_cpu
+from models.big_modeling import cpu_offload
 
 def main(args):
 
@@ -33,7 +34,12 @@ def main(args):
 
     #TODO: build a type list
     hook_module_list = (LlamaDecoderLayer, nn.Embedding, nn.Linear, LlamaRMSNorm, LlamaRotaryEmbedding)
-    model = offload_to_cpu(model, hook_module_list)
+    # model = offload_to_cpu(model, hook_module_list)
+    model = cpu_offload(
+        model,
+        execution_device=torch.device("cuda:0"),
+        offload_buffers=True
+    )
 
     print("Warming up model...")
 
