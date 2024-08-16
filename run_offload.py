@@ -15,11 +15,17 @@ def main(args):
     print("Loading model...")
 
     # load LLM
-    llm = AutoModelForCausalLM.from_pretrained(
-        args.llm_path,
-        torch_dtype=torch.float16,
-        device_map="cpu"
-    )
+
+    if args.mode == "naive":
+        llm = AutoModelForCausalLM.from_pretrained(
+            args.llm_path,
+            torch_dtype=torch.float16,
+            device_map="cpu"
+        )
+    elif args.mode == "offload":
+        config = AutoConfig.from_pretrained(args.llm_path)
+        with init_empty_weights():
+            llm = AutoModelForCausalLM.from_config(config)
     
     # load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.llm_path, use_fast=False)
@@ -34,12 +40,12 @@ def main(args):
 
     #TODO: build a type list
     hook_module_list = (LlamaDecoderLayer, nn.Embedding, nn.Linear, LlamaRMSNorm, LlamaRotaryEmbedding)
-    # model = offload_to_cpu(model, hook_module_list)
-    model = cpu_offload(
-        model,
-        execution_device=torch.device("cuda:0"),
-        offload_buffers=True
-    )
+    model = offload_to_cpu(model, hook_module_list)
+    # model = cpu_offload(
+    #     model,
+    #     execution_device=torch.device("cuda:0"),
+    #     offload_buffers=True
+    # )
 
     print("Warming up model...")
 
@@ -109,6 +115,12 @@ if __name__ == "__main__":
         "--do-sample",
         action="store_true",
         help="Whether to do sampling. (Default is False)",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        defaul="naive",
+        help="The mode of model generation",
     )
     parser.add_argument(
         "-nm",

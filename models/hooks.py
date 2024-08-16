@@ -18,7 +18,7 @@ from accelerate.utils.modeling import get_non_persistent_buffers
 from accelerate.utils.other import recursive_getattr
 
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaForCausalLM, LlamaRMSNorm, LlamaRotaryEmbedding
-
+import copy
 
 _accelerate_added_attributes = ["to", "cuda", "npu", "xpu", "mlu", "musa"]
 
@@ -153,9 +153,9 @@ def add_hook_to_module(module: nn.Module, hook: ModelHook, append: bool = False)
     def new_forward(module, *args, **kwargs):
         args, kwargs = module._hf_hook.pre_forward(module, *args, **kwargs)
 
-        gpu_mem_used = torch.cuda.memory_reserved(self.execution_device)
-        gpu_mem_used = gpu_mem_used / (1024 * 1024 * 1024)
-        print(f"[Debug] Current GPU memory usage: {gpu_mem_used} GB")
+        # gpu_mem_used = torch.cuda.memory_reserved(self.execution_device)
+        # gpu_mem_used = gpu_mem_used / (1024 * 1024 * 1024)
+        # print(f"[Debug] Current GPU memory usage: {gpu_mem_used} GB")
 
         if module._hf_hook.no_grad:
             with torch.no_grad():
@@ -775,27 +775,28 @@ class BlockwiseHook(ModelHook):
         module_copy = copy.deepcopy(module)
         print(f"[Info] module {self.module_name} is ready to be sent to gpu")
 
-        if self.memory_limit > 0:
-            gpu_mem_used = torch.cuda.memory_reserved(self.execution_device)
-            gpu_mem_used = gpu_mem_used / (1024 * 1024 * 1024)
+        gpu_mem_used = torch.cuda.memory_reserved(self.execution_device)
+        gpu_mem_used = gpu_mem_used / (1024 * 1024 * 1024)
 
-            size_in_bytes = 0
-            
-            for _ , param in module.named_parameters():
-                size_in_bytes += param.element_size() * param.numel()
+        size_in_bytes = 0
+        
+        for _ , param in module.named_parameters():
+            size_in_bytes += param.element_size() * param.numel()
 
-            for _ , param in module.named_buffers():
-                size_in_bytes += param.element_size() * param.numel()
+        for _ , param in module.named_buffers():
+            size_in_bytes += param.element_size() * param.numel()
 
-            size_in_GB = size_in_bytes / (1024 * 1024 * 1024)
+        size_in_GB = size_in_bytes / (1024 * 1024 * 1024)
 
-            print(f"[Info] GPU memory usage: {gpu_mem_used} GB")
-            print(f"[Info] Module parameter memory usage: {size_in_GB} GB")
-            
-            # TODO: try to clean cuda cache here, not done
-            if gpu_mem_used + size_in_GB > self.memory_limit:
-                print(f"[Offload Warning] Possible memory usage: {gpu_mem_used+size_in_GB}")
-                torch.cuda.empty_cache()
+        print(f"[Info] GPU memory usage: {gpu_mem_used} GB")
+        print(f"[Info] Module parameter memory usage: {size_in_GB} GB")
+
+        # torch.cuda.empty_cache()
+        
+        # TODO: try to clean cuda cache here, not done
+        if gpu_mem_used + size_in_GB > self.memory_limit:
+            print(f"[Offload Warning] Possible memory usage: {gpu_mem_used+size_in_GB}")
+            torch.cuda.empty_cache()
 
         return module_copy.to(self.execution_device), send_to_device(args, self.execution_device), send_to_device(kwargs, self.execution_device)
 
@@ -825,6 +826,13 @@ def add_hook_to_block(
         # gpu_mem_used = gpu_mem_used / (1024 * 1024 * 1024)
         # print(f"[Debug] Current gpu usage: {gpu_mem_used}")
 
+        #TODO: check parameter device
+        # for name, param in module_gpu.named_parameters():
+        #     print(f"Parameter: {name}, Device: {param.device}")
+        
+        # for name, param in module_gpu.named_parameters():
+        #     print(f"Buffer: {name}, Device: {param.device}")
+
         if module_gpu._hook.no_grad:
             with torch.no_grad():
                 output = module_gpu._old_forward(*args, **kwargs)
@@ -833,6 +841,7 @@ def add_hook_to_block(
 
         # print(f"Check output device: {output.device}")
         # output = module._hook.post_forward(module_gpu)
+        
         del module_gpu, args, kwargs
         # torch.cuda.empty_cache()
 
@@ -854,7 +863,7 @@ def attach_blockwise_hook(
 
     if isinstance(module, (LlamaDecoderLayer, nn.Embedding, nn.Linear, LlamaRMSNorm, LlamaRotaryEmbedding)):
         print(f"Hook add on {module_name}")
-        add_hook_to_block(module, BlockwiseHook(module_name, torch.device("cuda:0"), 8.0))
+        add_hook_to_block(module, BlockwiseHook(module_name, torch.device("cuda:0"), 0.0))
         return
 
     for child_name, child in module.named_children():
